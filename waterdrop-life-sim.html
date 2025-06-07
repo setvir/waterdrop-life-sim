@@ -1,0 +1,1148 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>
+      Vector Signal Organism Evolution (Hebbian Learning - Stabilized)
+    </title>
+    <style>
+      canvas {
+        border: 2px solid rgb(83, 2, 79);
+      }
+      .controls {
+        margin: 10px 0;
+      }
+      .slider-container {
+        margin: 10px 0;
+      }
+      .block-sequence {
+        display: inline-block;
+        font-size: 0; /* Remove whitespace between blocks */
+        width: 120px;
+        height: 20px;
+      }
+
+      .block {
+        display: inline-block;
+        width: 12px;
+        height: 18px;
+      }
+      .container {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(420px, 1fr));
+        gap: 20px;
+        padding: 20px;
+        box-sizing: border-box;
+      }
+
+      .column {
+        padding: 8px;
+        background: #fdfdfd;
+        border: 0px solid #ccc;
+        min-height: 200px;
+        box-sizing: border-box;
+      }
+
+      @media (max-width: 1250px) {
+        .container {
+          grid-template-columns: 1fr;
+        }
+        .column{
+            width:420px;
+            margin:auto;
+        }
+        /* Explicit stacking order */
+        .column:nth-child(1) {
+          order: 1;
+        } /* Left column first */
+        .column:nth-child(2) {
+          order: 2;
+        } /* Middle column */
+        .column:nth-child(3) {
+          order: 3;
+        } /* Right column last */
+      }
+    </style>
+  </head>
+  <body style="background-color: rgb(1, 1, 34)">
+    <center><h1 style="color: white">WATERDROP LIFE SIM</h1></center>
+    <div class="container">
+      <div class="column">
+        <canvas id="canvas" width="400" height="400"></canvas>
+        <br /><br />
+        <button id="toggleSim">Start/Stop</button><br />
+        <div class="slider-container">
+          <label
+            >Food Density:
+            <input type="range" id="foodSlider" min="1" max="200" value="50"
+          /></label>
+        </div>
+      </div>
+      <div class="column">
+        <div class="controls">
+          <span>Food: <span id="foodCount">0</span></span
+          ><br />
+          <span>Organisms Alive: <span id="orgCount">0</span></span><br/>  
+          <span>Total Organisms: <span id="orgTotalCount">10</span><br />
+          <span>Breeding Pool Status: <span id="poolStatus">Empty</span><br/>
+          <span>Breeding Pool Size: <span id="poolSize">0/20</span><br/>
+          <span>Time Run: <span id="Counter">0</span></span
+          ><br />
+          <span>Longest Living: <span id="longestLiving">0</span></span>
+          <hr />
+          <div id="liveOrgList" style=""></div>
+        </div>
+      </div>
+      <div
+        class="column"
+        style="background-color: darkblue; color: white; overflow-x: hidden"
+      >
+        <div id="leaderboard"></div>
+      </div>
+    </div>
+
+    <script>
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+      const FOOD_COLOR = "#2ecc71";
+      const MAX_FOOD = 20;
+      document.getElementById("foodSlider").value = MAX_FOOD;
+      const MARKED_FOOD_COLOR = "#e74c3c";
+      const ORG_COLOR = "#3498db";
+      const POOL_SIZE = 20;
+      const POOL_REFRESH_SIZE = 1;
+      const POOL_REFRESH_RATE = 1000;
+      const MAX_SENSED_ORGS = 2; // How many nearest organisms an organism can sense
+      const SIGNAL_LENGTH = 6;
+      const SHORT_TERM_MEMORY_SIZE = 64;
+      // --- MODIFIED ---
+      const NN_HIDDEN_SIZE = 768; // Reduced from 1024 to prevent performance freezes
+
+      // --- New Vector Store Constants ---
+      const VECTOR_STORE_CAPACITY = 16;
+      const VECTOR_TO_STORE_SIZE = SHORT_TERM_MEMORY_SIZE;
+      const NUM_RETRIEVED_VECTORS = 3;
+      // --- End New Vector Store Constants ---
+
+      // --- Hebbian Learning Constant ---
+      const HEBBIAN_LEARNING_RATE = 0.0005; // Small learning rate for Hebbian updates
+      const LEARNING_ACTIVE = true;
+      // --- End Hebbian Learning Constant ---
+
+      // Calculate NN input size
+      const NN_INPUT_SIZE =
+        6 + // Self
+        4 + // Food
+        MAX_SENSED_ORGS * (2 + SIGNAL_LENGTH) + // Sensed Orgs
+        SHORT_TERM_MEMORY_SIZE + // Memory
+        NUM_RETRIEVED_VECTORS * VECTOR_TO_STORE_SIZE; // Retrieved Vectors
+
+      // Output: Vel(2) + Mark(1) + Signal(SIGNAL_LENGTH) + HebbianControl(1)
+      const NN_OUTPUT_SIZE = 2 + 1 + SIGNAL_LENGTH + 1;
+      let longestLiving=0;
+    
+     document.getElementById("leaderboard").innerHTML =
+              "<table width='100%'><tr><th>ID</th><th>Fitness</th><th>Age</th></tr></table>";
+        
+       function formatTicks(ticks) {
+            let seconds = parseInt(ticks, 10);
+
+            const years = Math.floor(seconds / 31536000); // 365 days
+            seconds %= 31536000;
+
+            const days = Math.floor(seconds / 86400);      // 24 hours
+            seconds %= 86400;
+
+            const hours = Math.floor(seconds / 3600);
+            seconds %= 3600;
+
+            const minutes = Math.floor(seconds / 60);
+            seconds %= 60;
+
+            // Pad time components to 2 digits
+            const pad = n => n.toString().padStart(2, '0');
+            return `${years}:${days}:${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+        }
+
+      function generatePronounceableId(options = {}) {
+        const config = {
+          syllables: options.syllables || 2,
+          includeNumber: options.includeNumber ?? true,
+          numberLength: options.numberLength || 4,
+          glue: options.glue || "-",
+          patternWeights: options.patternWeights || [3, 2, 1], // CV, VC, VV weights
+        };
+
+        const consonants = "bcdfghjklmnpqrstvwxz";
+        const vowels = "aeiouy";
+
+        function getRandomPattern() {
+          const patterns = ["CV", "VC", "VV"];
+          const totalWeight = config.patternWeights.reduce((a, b) => a + b, 0);
+          const random = Math.random() * totalWeight;
+
+          let cumulative = 0;
+          for (let i = 0; i < patterns.length; i++) {
+            cumulative += config.patternWeights[i];
+            if (random < cumulative) return patterns[i];
+          }
+          return "CV";
+        }
+
+        function makeSyllable() {
+          const pattern = getRandomPattern();
+          return pattern
+            .split("")
+            .map((char) => {
+              if (char === "C")
+                return consonants[
+                  Math.floor(Math.random() * consonants.length)
+                ];
+              return vowels[Math.floor(Math.random() * vowels.length)];
+            })
+            .join("");
+        }
+
+        let name = "";
+        for (let i = 0; i < config.syllables; i++) {
+          name += makeSyllable();
+        }
+
+        // Ensure alternation between consonant/vowel between syllables
+        name = name.replace(/([bcdfghjklmnpqrstvwxz]{2})/gi, (match) => {
+          return match[0] + vowels[Math.floor(Math.random() * vowels.length)];
+        });
+
+        name = name.charAt(0).toUpperCase() + name.slice(1);
+
+        if (config.includeNumber) {
+          const min = 10 ** (config.numberLength - 1);
+          const max = 10 ** config.numberLength - 1;
+          const num = Math.floor(Math.random() * (max - min + 1)) + min;
+          name += config.glue + num;
+        }
+
+        return name;
+      }
+
+      function arrayToBlocks(arr) {
+        return arr
+          .map((number) => {
+            let color;
+            switch (number) {
+              case -1:
+                color = "#ff0000";
+                break;
+              case 0:
+                color = "#000000";
+                break;
+              case 1:
+                color = "#ffff00";
+                break;
+              default:
+                color = "#cccccc"; // fallback for invalid numbers
+            }
+            return `<div class="block" style="background-color:${color}"></div>`;
+          })
+          .join("");
+      }
+      class NeuralNet {
+        constructor(inputSize, hiddenSize, outputSize, parent1, parent2) {
+          this.inputSize = inputSize;
+          this.hiddenSize = hiddenSize;
+          this.outputSize = outputSize;
+
+          const initWeights = (rows, cols) =>
+            Array.from({ length: rows }, () =>
+              Array.from({ length: cols }, () => (Math.random() * 2 - 1) * 0.1)
+            );
+
+          if (parent1 && parent2) {
+            this.weights1 = parent1.weights1.map((row, i) =>
+              row.map((w, j) =>
+                Math.random() < 0.5 ? w : parent2.weights1[i][j]
+              )
+            );
+            this.weights2 = parent1.weights2.map((row, i) =>
+              row.map((w, j) =>
+                Math.random() < 0.5 ? w : parent2.weights2[i][j]
+              )
+            );
+            this.weights3 = parent1.weights3.map((row, i) =>
+              row.map((w, j) =>
+                Math.random() < 0.5 ? w : parent2.weights3[i][j]
+              )
+            );
+            this.bias1 = parent1.bias1.map(
+              (b, i) => (b + parent2.bias1[i]) / 2
+            );
+            this.bias2 = parent2.bias2.map((b, i) =>
+              Math.random() < 0.5 ? b : parent1.bias2[i]
+            );
+            this.bias3 = parent2.bias3.map((b, i) =>
+              Math.random() < 0.5 ? b : parent1.bias3[i]
+            );
+            parent1=null;parent2=null;
+          } else {
+            this.weights1 = initWeights(hiddenSize, inputSize);
+            this.weights2 = initWeights(hiddenSize, hiddenSize);
+            this.weights3 = initWeights(outputSize, hiddenSize);
+            this.bias1 = Array(hiddenSize).fill(0);
+            this.bias2 = Array(hiddenSize).fill(0);
+            this.bias3 = Array(outputSize).fill(0);
+          }
+        }
+
+        forward(input) {
+          const relu = (x) => Math.max(0, x);
+          const tanh = Math.tanh;
+
+          // Layer 1
+          let h1_raw = this.weights1.map(
+            (row, r) =>
+              row.reduce((sum, w, i) => {
+                const term = w * input[i];
+                if (isNaN(term)) {
+                  /* console.warn("NaN in h1_raw term", {w, input_i: input[i]}); */ return sum;
+                }
+                return sum + term;
+              }, 0) + this.bias1[r]
+          );
+          if (h1_raw.some(isNaN)) {
+            /* console.warn("NaN in h1_raw array"); */
+          }
+          let h1 = h1_raw.map(relu);
+
+          // Layer 2
+          let h2_raw = this.weights2.map(
+            (row, r) =>
+              row.reduce((sum, w, i) => {
+                const term = w * h1[i];
+                if (isNaN(term)) {
+                  /* console.warn("NaN in h2_raw term", {w, h1_i: h1[i]}); */ return sum;
+                }
+                return sum + term;
+              }, 0) + this.bias2[r]
+          );
+          if (h2_raw.some(isNaN)) {
+            /* console.warn("NaN in h2_raw array"); */
+          }
+          let h2 = h2_raw.map(relu);
+
+          // Output Layer
+          let output_raw = this.weights3.map(
+            (row, r) =>
+              row.reduce((sum, w, i) => {
+                const term = w * h2[i];
+                if (isNaN(term)) {
+                  /* console.warn("NaN in output_raw term", {w, h2_i: h2[i]}); */ return sum;
+                }
+                return sum + term;
+              }, 0) + this.bias3[r]
+          );
+          if (output_raw.some(isNaN)) {
+            /* console.warn("NaN in output_raw array"); */
+          }
+
+          const numActionOutputs = NN_OUTPUT_SIZE - 1;
+          let action_outputs = output_raw
+            .slice(0, numActionOutputs)
+            .map((v, i) => {
+              if (i < 3) { // Velocity and Mark outputs
+                return v;
+              } else { // Signal outputs
+                return tanh(v);
+              }
+            });
+
+          let hebbian_control_signal = tanh(output_raw[numActionOutputs]);
+
+          let memory_output = h2.slice(0, SHORT_TERM_MEMORY_SIZE);
+          // Ensure memory_output has the correct length, padding with 0 if h2 is shorter
+          // This can happen if NN_HIDDEN_SIZE < SHORT_TERM_MEMORY_SIZE
+          while (memory_output.length < SHORT_TERM_MEMORY_SIZE) {
+            memory_output.push(0);
+          }
+
+
+          return {
+            action_outputs: action_outputs,
+            memory_output: memory_output,
+            h1_activations: h1,
+            h2_activations: h2,
+            hebbian_control_signal: hebbian_control_signal,
+          };
+        }
+
+        applyHebbianLearning(
+          learningMode,
+          presynapticActivations,
+          postsynapticActivations,
+          weights,
+          biases
+        ) {
+          const lr = HEBBIAN_LEARNING_RATE;
+          if (lr === 0) return;
+
+          for (let i = 0; i < weights.length; i++) { // Iterate over postsynaptic neurons
+            for (let j = 0; j < weights[i].length; j++) { // Iterate over presynaptic neurons
+              if (
+                presynapticActivations[j] === undefined ||
+                postsynapticActivations[i] === undefined ||
+                isNaN(presynapticActivations[j]) ||
+                isNaN(postsynapticActivations[i])
+              ) {
+                // console.warn("Invalid activation in Hebbian learning. Pre:", presynapticActivations[j], "Post:", postsynapticActivations[i]);
+                continue;
+              }
+              const deltaWeight =
+                learningMode *
+                lr *
+                presynapticActivations[j] *
+                postsynapticActivations[i];
+              if (isNaN(deltaWeight)) {
+                // console.warn("NaN deltaWeight in Hebbian learning", {learningMode, lr, pre: presynapticActivations[j], post: postsynapticActivations[i]});
+                continue;
+              }
+              weights[i][j] += deltaWeight;
+              weights[i][j] = Math.max(-5, Math.min(5, weights[i][j])); // CLAMPING ENABLED
+              if (isNaN(weights[i][j])) {
+                // console.warn("Weight became NaN post-clamping, resetting.", {i,j});
+                weights[i][j] = (Math.random() * 2 - 1) * 0.1; // Reset if it somehow still became NaN
+              }
+            }
+          }
+
+          for (let i = 0; i < biases.length; i++) { // Iterate over postsynaptic neurons (for biases)
+            if (
+              postsynapticActivations[i] === undefined ||
+              isNaN(postsynapticActivations[i])
+            ) {
+              // console.warn("Invalid postsynaptic activation for bias update:", postsynapticActivations[i]);
+              continue;
+            }
+            const deltaBias = learningMode * lr * postsynapticActivations[i];
+            if (isNaN(deltaBias)) {
+              // console.warn("NaN deltaBias in Hebbian learning", {learningMode, lr, post: postsynapticActivations[i]});
+              continue;
+            }
+            biases[i] += deltaBias;
+            biases[i] = Math.max(-5, Math.min(5, biases[i])); // CLAMPING ENABLED
+            if (isNaN(biases[i])) {
+              // console.warn("Bias became NaN post-clamping, resetting.", {i});
+              biases[i] = 0; // Reset if it somehow still became NaN
+            }
+          }
+        }
+
+        mutate(rate = 0.05, magnitude = 0.1) {
+          const mutate = (arr) =>
+            arr.map((v) =>
+              Math.random() < rate ? v + (Math.random() - 0.5) * magnitude : v
+            );
+          const mutateMatrix = (matrix) => matrix.map((row) => mutate(row));
+
+          this.weights1 = mutateMatrix(this.weights1);
+          this.weights2 = mutateMatrix(this.weights2);
+          this.weights3 = mutateMatrix(this.weights3);
+          this.bias1 = mutate(this.bias1);
+          this.bias2 = mutate(this.bias2);
+          this.bias3 = mutate(this.bias3);
+        }
+      }
+
+      class Organism {
+        constructor(parents) {
+          this.id = generatePronounceableId();
+          /*this.pos = { x: Math.random() * 400, y: Math.random() * 400 };
+          if (this.pos.x < 16) this.pos.x = 16;
+          if (this.pos.y < 16) this.pos.y = 16;
+          if (this.pos.x > 384) this.pos.x = 384;
+          if (this.pos.y > 384) this.pos.y = 384;*/
+          this.pos = { x: Math.min(Math.max(Math.random() * 400, 16), 384), y: Math.min(Math.max(Math.random() * 400, 16), 384) };
+          this.vel = {
+            x: (Math.random() - 0.5) * 0.05,
+            y: (Math.random() - 0.5) * 0.05,
+          };
+          this.energy = 200;
+          this.markcount = 0;
+          this.totalEnergy = 0;
+          this.age = 0;
+          this.baseCost = 0;
+          this.signal = Array(SIGNAL_LENGTH).fill(0);
+          this.shortTermMemory = Array(SHORT_TERM_MEMORY_SIZE).fill(0);
+          this.vectorStore = [];
+          this.vectorStoreCapacity = VECTOR_STORE_CAPACITY;
+          this.vectorToStoreSize = VECTOR_TO_STORE_SIZE;
+          this.totalFoodColitions = 1;
+          this.injuryCost = 0;
+          this.totalInjuryCost =0;
+          if (parents) {
+            console.log("Breeding "+parents[0].id+" & "+ parents[1].id);
+            this.nn = new NeuralNet(
+              NN_INPUT_SIZE,
+              NN_HIDDEN_SIZE,
+              NN_OUTPUT_SIZE,
+              parents[0].nn,
+              parents[1].nn
+            );
+            this.nn.mutate();
+          } else {
+            this.nn = new NeuralNet(
+              NN_INPUT_SIZE,
+              NN_HIDDEN_SIZE,
+              NN_OUTPUT_SIZE
+            );
+          }
+        }
+
+        getNearestFood(foodList) {
+          let nearest = null;
+          let minDist = Infinity;
+          for (const food of foodList) {
+            const dx = food.pos.x - this.pos.x;
+            const dy = food.pos.y - this.pos.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < minDist) {
+              minDist = dist;
+              nearest = food;
+            }
+          }
+          return { nearest, minDist };
+        }
+
+        buildInput(foodList, organisms) {
+          const selfInfo = [
+            this.pos.x / 400,
+            this.pos.y / 400,
+            this.vel.x / 100,
+            this.vel.y / 100,
+            this.energy / 1000,
+            this.fitness,
+          ];
+
+          const { nearest: nearestFood, minDist: foodDist } =
+            this.getNearestFood(foodList);
+          const foodInfo = nearestFood
+            ? [
+                (nearestFood.pos.x - this.pos.x) / 400,
+                (nearestFood.pos.y - this.pos.y) / 400,
+                Math.min(1, foodDist / 400),
+                nearestFood.markedBy
+                  ? nearestFood.markedBy === this.id
+                    ? 1
+                    : -1
+                  : 0,
+              ]
+            : [0, 0, 1, 0];
+
+          const otherOrgs = organisms.filter((org) => org.id !== this.id);
+          otherOrgs.sort((a, b) => {
+            const distA = Math.hypot(
+              a.pos.x - this.pos.x,
+              a.pos.y - this.pos.y
+            );
+            const distB = Math.hypot(
+              b.pos.x - this.pos.x,
+              b.pos.y - this.pos.y
+            );
+            return distA - distB;
+          });
+
+          const sensedOrgsInfo = [];
+          for (let i = 0; i < MAX_SENSED_ORGS; i++) {
+            if (i < otherOrgs.length) {
+              const org = otherOrgs[i];
+              const relDx = (org.pos.x - this.pos.x) / 400;
+              const relDy = (org.pos.y - this.pos.y) / 400;
+              sensedOrgsInfo.push(relDx, relDy, ...org.signal);
+            } else {
+              sensedOrgsInfo.push(...Array(2 + SIGNAL_LENGTH).fill(0));
+            }
+          }
+
+          const queryVector = this.shortTermMemory;
+          let retrievedVectorsInfo = Array(
+            NUM_RETRIEVED_VECTORS * this.vectorToStoreSize
+          ).fill(0);
+
+          if (
+            this.vectorStore.length > 0 &&
+            queryVector.length === this.vectorToStoreSize
+          ) {
+            let similarities = this.vectorStore.map((entry) => {
+              const storedVector = entry.vector;
+              let dotProduct = 0;
+              let magnitudeA = 0;
+              let magnitudeB = 0;
+              for (let i = 0; i < queryVector.length; i++) {
+                dotProduct += queryVector[i] * storedVector[i];
+                magnitudeA += queryVector[i] * queryVector[i];
+                magnitudeB += storedVector[i] * storedVector[i];
+              }
+              magnitudeA = Math.sqrt(magnitudeA);
+              magnitudeB = Math.sqrt(magnitudeB);
+              const similarity =
+                magnitudeA === 0 || magnitudeB === 0
+                  ? 0
+                  : dotProduct / (magnitudeA * magnitudeB);
+              return { entry, similarity };
+            });
+            similarities.sort((a, b) => b.similarity - a.similarity);
+            let bestMatches = similarities.slice(0, NUM_RETRIEVED_VECTORS);
+            retrievedVectorsInfo = [];
+            bestMatches.forEach((match) => {
+              retrievedVectorsInfo.push(...match.entry.vector);
+            });
+            while (
+              retrievedVectorsInfo.length <
+              NUM_RETRIEVED_VECTORS * this.vectorToStoreSize
+            ) {
+              retrievedVectorsInfo.push(0);
+            }
+          } else if (
+            this.vectorStore.length > 0 &&
+            queryVector.length !== this.vectorToStoreSize
+          ) {
+            // console.error("Query vector size mismatch. Cannot perform retrieval.");
+          }
+
+          let finalInput = [
+            ...selfInfo,
+            ...foodInfo,
+            ...sensedOrgsInfo,
+            ...this.shortTermMemory,
+            ...retrievedVectorsInfo,
+          ];
+
+          // Ensure all inputs are numbers
+          finalInput = finalInput.map((val) => (isNaN(val) ? 0 : val));
+
+          if (finalInput.length !== NN_INPUT_SIZE) {
+            console.error(
+              `Input size mismatch! Expected ${NN_INPUT_SIZE}, Got ${finalInput.length}`
+            );
+             // To prevent further errors if mismatch occurs, could pad or truncate,
+             // but ideally the cause of mismatch should be found.
+             // For now, if it's too short, pad with zeros. If too long, truncate.
+             // This is a fallback, not a perfect solution.
+            while(finalInput.length < NN_INPUT_SIZE) finalInput.push(0);
+            if(finalInput.length > NN_INPUT_SIZE) finalInput.length = NN_INPUT_SIZE;
+
+          }
+          return finalInput;
+        }
+
+        update(foodList, organisms) {
+          const input = this.buildInput(foodList, organisms);
+          if (input.some(isNaN)) {
+            // This check is now mostly redundant due to mapping NaNs to 0 in buildInput,
+            // but kept as a safeguard for unexpected NaNs.
+            // console.warn(`Organism ${this.id} has NaN in its NN input (should have been replaced by 0).`);
+            this.energy = 0; 
+            return;
+          }
+
+          const {
+            action_outputs,
+            memory_output,
+            h1_activations,
+            h2_activations,
+            hebbian_control_signal,
+          } = this.nn.forward(input);
+
+          if (
+            action_outputs.some(isNaN) ||
+            memory_output.some(isNaN) ||
+            isNaN(hebbian_control_signal)
+          ) {
+            // console.warn(`Organism ${this.id} received NaN from NN forward pass.`);
+            this.energy = 0; // Kill organism if NN output is corrupted
+            return;
+          }
+
+          this.shortTermMemory = memory_output;
+
+          this.hebbianMode = 0;
+          if (hebbian_control_signal > 0.5  && LEARNING_ACTIVE) {
+            this.hebbianMode = 1;
+          } else if (hebbian_control_signal < -0.5 && LEARNING_ACTIVE) {
+            this.hebbianMode = -1;
+          }
+
+          if (this.hebbianMode !== 0 && LEARNING_ACTIVE) {
+            /*this.nn.applyHebbianLearning( // This one for weights1 is also expensive if uncommented
+              this.hebbianMode,
+              input, // Presynaptic for first layer
+              h1_activations, // Postsynaptic for first layer
+              this.nn.weights1,
+              this.nn.bias1
+            );*/
+            this.nn.applyHebbianLearning( // This is for weights2
+              this.hebbianMode,
+              h1_activations, // Presynaptic for second layer
+              h2_activations, // Postsynaptic for second layer
+              this.nn.weights2,
+              this.nn.bias2
+            );
+          }
+
+          const vectorToStore = memory_output;
+          // storage condition
+          if (this.age % 33 === 0 || this.age === 0) {
+            if (this.vectorStore.length >= this.vectorStoreCapacity) {
+              this.vectorStore.shift();
+            }
+            this.vectorStore.push({
+              vector: [...vectorToStore],
+              age: this.age,
+              energy: this.energy,
+            });
+          }
+
+          let dVelX = Math.tanh(action_outputs[0]) * 0.8;
+          let dVelY = Math.tanh(action_outputs[1]) * 0.8;
+
+          if (isNaN(dVelX)) dVelX = 0;
+          if (isNaN(dVelY)) dVelY = 0;
+
+          this.vel.x += dVelX;
+          this.vel.y += dVelY;
+
+          this.vel.x = Math.max(-2, Math.min(2, this.vel.x));
+          this.vel.y = Math.max(-2, Math.min(2, this.vel.y));
+
+          if (isNaN(this.vel.x)) this.vel.x = 0; 
+          if (isNaN(this.vel.y)) this.vel.y = 0;
+
+
+          this.vel.x *= 0.96;
+          this.vel.y *= 0.96;
+
+          if (Math.abs(this.vel.x) < 0.001) this.vel.x = 0;
+          if (Math.abs(this.vel.y) < 0.001) this.vel.y = 0;
+
+
+          this.pos.x += this.vel.x;
+          this.pos.y += this.vel.y;
+
+          if (isNaN(this.pos.x) || isNaN(this.pos.y)) {
+            // console.error(`Organism ${this.id} position became NaN AFTER physics update! vel: (${this.vel.x}, ${this.vel.y})`);
+            this.energy = 0; 
+            return;
+          }
+
+          if (this.pos.x < 6) {
+            this.pos.x = 6;
+            this.injuryCost += (Math.abs(this.vel.x) * 10)+0.01;
+            this.totalInjuryCost += this.injuryCost;
+            this.vel.x *= -0.4;
+          }
+          if (this.pos.x > 394) {
+            this.pos.x = 394;
+            this.injuryCost += (Math.abs(this.vel.x) * 10)+0.01;
+            this.totalInjuryCost += this.injuryCost;
+            this.vel.x *= -0.4;
+          }
+          if (this.pos.y < 6) {
+            this.pos.y = 6;
+            this.injuryCost += (Math.abs(this.vel.y) * 10)+0.01;
+            this.totalInjuryCost += this.injuryCost;
+            this.vel.y *= -0.4;
+          }
+          if (this.pos.y > 394) {
+            this.pos.y = 394;
+            this.injuryCost += (Math.abs(this.vel.y) * 10)+0.01;
+            this.totalInjuryCost += this.injuryCost;
+            this.vel.y *= -0.4;
+          }
+        
+          this.signal = action_outputs
+              .slice(3, 3 + SIGNAL_LENGTH) // action_outputs[2] is mark, signals start at index 3
+              .map((v) => {
+                if (v > 0.5) return 1;
+                if (v < -0.5) return -1;
+                return 0;
+              });
+          this.baseCost += 0.001;
+          this.energy -=
+            (Math.abs(Math.tanh(action_outputs[0])) + // Cost for velocity change attempt
+              Math.abs(Math.tanh(action_outputs[1]))) *
+            0.005;
+          this.energy -= this.signal.some(x => x !== 0) ? 0.02 * SIGNAL_LENGTH : 0; // Cost for active signaling
+          this.energy -= this.hebbianMode !== 0 ? 0.2 : 0; // Cost for learning
+          this.energy -= this.baseCost; // General metabolic cost
+          this.energy -= this.injuryCost; // Cost from wall collisions
+          this.injuryCost *= 0.1; // Injury cost decays
+          if (this.injuryCost < 0.0001) this.injuryCost = 0;
+
+          if (isNaN(this.energy) ) this.energy = 0; 
+
+          this.age++;
+          if (this.age > longestLiving) {
+            longestLiving = this.age;
+            document.getElementById("longestLiving").textContent = formatTicks(this.age);
+          }
+        }
+
+        fitness(){
+            return ((this.age/10000 * 0.7) + 
+                    (this.totalEnergy/1000 * 0.3) + 
+                    (this.totalFoodColitions/50 * 0.2) -
+                    (this.totalInjuryCost/1000 * 0.5))/1000;
+        } 
+      }
+
+      class Food {
+        constructor() {
+          this.pos = { x: Math.min(Math.max(Math.random() * 400, 16), 384), y: Math.min(Math.max(Math.random() * 400, 16), 384) };
+          this.markedBy = null;
+        }
+      }
+
+      class Simulation {
+        constructor() {
+          this.organisms = Array.from({ length: 10 }, () => new Organism());
+          this.food = [];
+          this.running = false;
+          this.breedingPool = [];
+          this.maxFood = MAX_FOOD;
+          this.counter = 0;
+          this.orgCounter = 10;
+          this.currentPoolSize = 0;
+          document.getElementById("orgTotalCount").innerText = this.orgCounter;
+
+          document
+            .getElementById("foodSlider")
+            .addEventListener("input", (e) => {
+              this.maxFood = parseInt(e.target.value, 10);
+            });
+          this.maxFood = parseInt(
+            document.getElementById("foodSlider").value,
+            10
+          );
+        }
+
+        spawnFood() {
+          if (this.food.length < this.maxFood) {
+            while (this.food.length < this.maxFood) {
+              this.food.push(new Food());
+            }
+          }
+        }
+
+        checkCollisions() {
+          const foodToRemove = new Set();
+          const foodToMark = new Map(); // Using Map to store {foodIndex: org.id}
+
+          this.organisms.forEach((org) => {
+            if (isNaN(org.pos.x) || isNaN(org.pos.y) || org.energy <= 0) return; 
+
+            this.food.forEach((food, idx) => {
+              if (foodToRemove.has(idx) || foodToMark.has(idx)) return; // Already processed or marked for removal
+
+              const dx = food.pos.x - org.pos.x;
+              const dy = food.pos.y - org.pos.y;
+              const dist = Math.hypot(dx, dy);
+              const interactRadius = 8; // Organism size + food size
+
+              if (dist < interactRadius) {
+                // Check NN output for marking decision (action_outputs[2])
+                // For simplicity, let's assume a positive output from action_outputs[2] (after tanh) means "mark"
+                // However, action_outputs is not directly available here.
+                // This part of logic was previously using `org.lastMarkingOutput` which is not defined.
+                // For now, we'll assume if it's not marked, it gets marked. If marked by other, it's eaten.
+                // A more robust solution would be to store the marking decision from the NN output.
+                // For this fix, we'll keep the simplified logic based on current food.markedBy state.
+
+                if (food.markedBy && food.markedBy !== org.id) { // Food marked by another organism
+                  org.energy += 100;
+                  org.totalEnergy += 100;
+                  foodToRemove.add(idx);
+                  org.totalFoodColitions++;
+                  org.baseCost = 0; // Reset base cost on eating (as in original logic)
+                } else if (!food.markedBy) { // Food is not marked by anyone
+                  // For now, assume organism always tries to mark if it can
+                  // A proper implementation would use the organism's NN output for "mark" action
+                  foodToMark.set(idx, org.id);
+                  //org.energy += 0.01; // Small energy gain for marking
+                  //org.totalEnergy += 0.01;
+                  org.markcount += 1; // Simplified mark count increment
+                  // org.totalFoodColitions++; // This was in original, but maybe only for eating?
+                                         // Let's keep it as it suggests interaction.
+                  org.totalFoodColitions++; 
+                }
+                // If food.markedBy === org.id, nothing happens in this step (it's already marked by self)
+              }
+            });
+          });
+
+          foodToMark.forEach((orgId, idx) => {
+            if (!foodToRemove.has(idx) && idx < this.food.length) { // Check if food still exists
+              this.food[idx].markedBy = orgId;
+            }
+          });
+
+          if (foodToRemove.size > 0) {
+            this.food = this.food.filter((_, idx) => !foodToRemove.has(idx));
+          }
+        }
+
+        maintainPopulation() {
+          while (this.organisms.length < 10) {
+            this.orgCounter += 1;
+            document.getElementById("orgTotalCount").innerText =
+              this.orgCounter;
+            let parents = null;
+            if (this.breedingPool.length >= POOL_SIZE) { // Need at least 2 for breeding
+                // Simplified: pick two from the top of the breeding pool if available
+                // More robust: ensure diversity, avoid picking same parent twice if pool is small
+                let p1Idx = Math.floor(Math.random() * this.breedingPool.length); // Prefer top POOL_SIZE
+                let p2Idx = Math.floor(Math.random() * this.breedingPool.length); 
+                if (p1Idx === p2Idx) {
+                     p2Idx = (p1Idx + 1) % this.breedingPool.length; // Avoid same parent if possible
+                }
+                 if(this.breedingPool[p1Idx] && this.breedingPool[p2Idx]){
+                    parents = [
+                        this.breedingPool[p1Idx],
+                        this.breedingPool[p2Idx],
+                    ];
+                } else { // Fallback if indexing failed (e.g. pool smaller than expected)
+                    parents = null;
+                }
+            }
+            this.organisms.push(new Organism(parents));
+          }
+        }
+
+        updateLeaderboard() {
+          let html =
+            "<table width='100%'><tr><th>ID</th><th>Fitness</th><th>Age</th></tr>";
+          for (const org of this.breedingPool) {
+            html += `<tr><td>${org.id}</td><td><center>${org.fitness.toFixed(4)}</center></td><td><center>${formatTicks(org.age)}</center></td></tr>`;
+          }
+          html += "</table>";
+          document.getElementById("leaderboard").innerHTML = html;
+        }
+        
+        findInsertionPointDescending(sortedArray, newItem) {
+            let low = 0;
+            let high = sortedArray.length;
+
+            while (low < high) {
+                const mid = Math.floor((low + high) / 2);
+                // If newItem's fitness is greater than mid-item's fitness,
+                // newItem should go in the first half (or at mid).
+                if (newItem.fitness > sortedArray[mid].fitness) {
+                high = mid;
+                } else {
+                // Otherwise, newItem is less fit or equally fit,
+                // so it should go in the second half (after mid).
+                low = mid + 1;
+                }
+            }
+            return low; // This is the index where newItem should be inserted.
+        }
+
+        updateBreedingPool(deadOrg) {
+            // Determine if the deadOrg should be considered for the breeding pool.
+            // It should be considered if the pool isn't full, or if the org is fitter
+            // than the worst member currently in the full pool.
+            const poolIsFull = this.breedingPool.length >= POOL_SIZE;
+            const canPotentiallyAdd = !poolIsFull || (poolIsFull && deadOrg.fitness > this.breedingPool[POOL_SIZE - 1].fitness);
+
+            if (canPotentiallyAdd) {
+                const insertionIndex = this.findInsertionPointDescending(this.breedingPool, deadOrg);
+                this.breedingPool.splice(insertionIndex, 0, deadOrg); // Insert the new organism
+                if(this.orgCounter % 3 === 0 && !poolIsFull) this.currentPoolSize++; 
+                if (this.breedingPool.length > Math.min(this.currentPoolSize, POOL_SIZE)) {
+                    this.breedingPool[this.breedingPool.length-1] = null;
+                    this.breedingPool.pop(); // Removes the last element (lowest fitness)
+                }
+            }
+
+            // --- Pool Status and Refresh Logic (adapted from your original) ---
+            if (this.breedingPool.length >= POOL_SIZE) { // Pool is full (or was just made full)
+                document.getElementById('poolStatus').innerText = "Breeding";
+                document.getElementById('poolStatus').style.color = "Black"; // Use a less alarming color for normal state
+
+                // Periodic refresh: if pool is full, make space by removing some of the worst
+                if (this.orgCounter % POOL_REFRESH_RATE === 0 && POOL_REFRESH_SIZE > 0) {
+                    // Ensure we don't empty the pool if POOL_REFRESH_SIZE is too large
+                    this.currentPoolSize = Math.max(0, POOL_SIZE - POOL_REFRESH_SIZE);
+                    while (this.breedingPool.length > this.currentPoolSize) {
+                        this.breedingPool[this.breedingPool.length-1] = null;
+                        this.breedingPool.pop(); // Removes the last element (lowest fitness)
+                    }
+                    // After refresh, status might change if it's no longer full
+                    if (this.breedingPool.length < POOL_SIZE) {
+                        document.getElementById('poolStatus').innerText = "Adding";
+                        document.getElementById('poolStatus').style.color = "Red";
+                    }
+                }
+            } else { // Pool is not full
+                document.getElementById('poolStatus').innerText = "Adding";
+                document.getElementById('poolStatus').style.color = "Red";
+            }
+
+            document.getElementById('poolSize').innerText = `${this.breedingPool.length}/${POOL_SIZE}`;
+
+            // Update leaderboard only if there's something to show
+            if (this.breedingPool.length > 0) {
+                this.updateLeaderboard();
+            }
+        }
+
+        update() {
+          document.getElementById("Counter").textContent = formatTicks(this.counter);
+          this.counter++;
+          this.spawnFood();
+
+          const currentOrganisms = [...this.organisms]; // Use for sensing to avoid self-sensing issues if list changes
+          let orghtml =
+            "<br/><br/><table style='width:100%'><tr><td>NAME-ID  </td><td style='text-align: center;'>SIGNAL</td>";
+          if(LEARNING_ACTIVE) orghtml += "<td><center>LEARNING  </center></td>";
+          orghtml += "<td><center>ENERGY</center></td></tr>";
+          
+          this.organisms.forEach((org) => {
+            if (isNaN(org.pos.x) || isNaN(org.pos.y) || org.energy <= 0) {
+              // Skip update for dead or invalid organisms
+            } else {
+              // Build HTML for live org list before update (shows state from previous tick)
+              orghtml +=
+                "<tr><td style='width:75px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'>" + // Adjusted width and overflow
+                org.id +
+                "</td><td class='block-sequence' style='height:21px;text-align: center; vertical-align: middle;'><center>";
+
+              if (org.signal.some(x => x !== 0)) {
+                orghtml += arrayToBlocks(org.signal);
+              }
+              // Removed </center> that was misplaced inside <td>
+              orghtml += "</center></td>";
+              
+              if(LEARNING_ACTIVE){
+                orghtml += "<td> ";
+                if (org.hebbianMode != 0)
+                    orghtml += `<center><div class="block" style="background-color:red;"></div></center>`;
+                else
+                    orghtml += `<center><div class="block" style="background-color:white;"></div></center>`;
+                orghtml += "</td> ";
+              }
+              
+
+              
+
+              orghtml +=
+                "<td style='max-width: 60px;  white-space: nowrap;  overflow: hidden;  text-overflow: ellipsis;'> " +
+                org.energy.toFixed(2) + // Display energy with 2 decimal places
+                "</td></tr>";
+              
+              org.update(this.food, currentOrganisms); // Pass all food, and current list of organisms
+            }
+          });
+          orghtml += "</table>";
+          document.getElementById("liveOrgList").innerHTML = orghtml;
+
+          this.checkCollisions();
+
+          //const deadOrgs = [];
+          this.organisms = this.organisms.filter((org) => {
+            if (org.energy <= 0 || isNaN(org.pos.x) || isNaN(org.pos.y)) {
+              if (!isNaN(org.pos.x) && !isNaN(org.pos.y) && org.age > 0) { // Only add to pool if not NaN at death and lived a bit
+                //deadOrgs.push(org);
+                this.updateBreedingPool({
+                  id: org.id,
+                  fitness: org.fitness(),
+                  age: org.age,
+                  nn: org.nn // Ensure this is a copy or reference, depending on your needs
+                });
+                org=null;
+              } else {
+                org=null;
+                // console.log(`Organism ${org.id} removed (age ${org.age}, pos ${org.pos.x},${org.pos.y}) without adding to breeding pool.`);
+              }
+              return false;
+            }
+            return true;
+          });
+          //deadOrgs.forEach((deadOrg) => this.updateBreedingPool(deadOrg));
+
+          this.maintainPopulation();
+        }
+
+        draw() {
+          ctx.clearRect(0, 0, 400, 400);
+
+          this.food.forEach((food) => {
+            ctx.fillStyle = food.markedBy ? MARKED_FOOD_COLOR : FOOD_COLOR;
+            ctx.beginPath();
+            ctx.arc(food.pos.x, food.pos.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+          });
+
+          this.organisms.forEach((org) => {
+            if (isNaN(org.pos.x) || isNaN(org.pos.y)) {
+              return;
+            }
+            const size = 6;
+            ctx.beginPath();
+            ctx.arc(org.pos.x, org.pos.y, size, 0, Math.PI * 2);
+            ctx.fillStyle = ORG_COLOR;
+            ctx.fill();
+
+            if (org.signal.some(x => x !== 0)) {
+              const sigStartX = org.pos.x - (SIGNAL_LENGTH * 1.5) / 2; // Centered signal display
+              const sigY = org.pos.y - size - 4; // Above organism
+              for (let i = 0; i < SIGNAL_LENGTH; i++) {
+                if (org.signal[i] === 1) ctx.fillStyle = "yellow";
+                else if (org.signal[i] === -1) ctx.fillStyle = "red";
+                else ctx.fillStyle = "black";
+                ctx.fillRect(sigStartX + i * 1.5, sigY, 1.2, 3); // Slightly thicker blocks for visibility
+              }
+            }
+          });
+
+          document.getElementById("foodCount").textContent = this.food.length;
+          document.getElementById("orgCount").textContent =
+            this.organisms.length;
+        }
+
+        run() {
+          if (this.running) {
+            this.update();
+            this.draw();
+            requestAnimationFrame(() => this.run());
+          }
+        }
+
+        toggle() {
+          this.running = !this.running;
+          if (this.running) {
+            console.log(
+              "Simulation starting with Hebbian Learning (Stabilized)..."
+            );
+            console.log(
+              `NN Input: ${NN_INPUT_SIZE}, Hidden: ${NN_HIDDEN_SIZE}, Output: ${NN_OUTPUT_SIZE} (incl. Hebbian ctrl)`
+            );
+            if (this.organisms.length === 0) { // Ensure population if starting from scratch
+              for (let i = 0; i < 10; i++) this.organisms.push(new Organism());
+              this.orgCounter = this.organisms.length;
+              document.getElementById("orgTotalCount").innerText =
+                this.orgCounter;
+            }
+            this.run();
+          } else {
+            console.log("Simulation stopped.");
+          }
+        }
+      }
+
+      const sim = new Simulation();
+      document
+        .getElementById("toggleSim")
+        .addEventListener("click", () => sim.toggle());
+
+      sim.spawnFood(); // Initial food spawn
+      sim.draw(); // Initial draw
+    </script>
+  </body>
+</html>
