@@ -20,7 +20,7 @@
 - **Simulation Environment**
   - 400x400 canvas where organisms move and sense.
   - Food items are randomly spawned and consumed.
-  - Organisms may mark food to reserve it temporarily.
+  - Organisms may mark food that is then available for other organisms to eat
 
 - **Visual Interface**
   - Real-time organism count, food count, age tracking, and leaderboard.
